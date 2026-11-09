@@ -1,0 +1,16 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "devices": "Devices (one per line: MAC; Name)",
+          "scan_interval": "Polling interval (seconds)",
+          "max_retries": "Max retries",
+          "raw_soil_moisture": "Use raw soil moisture",
+          "service_uuid": "BLE service UUID",
+          "char_uuid": "BLE characteristic UUID"
+        }
+      }
+    }
+  }
+}

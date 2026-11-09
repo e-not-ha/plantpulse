@@ -1,0 +1,16 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "devices": "Устройства (по одному в строке: MAC; Имя)",
+          "scan_interval": "Интервал опроса (сек)",
+          "max_retries": "Макс. число попыток",
+          "raw_soil_moisture": "Использовать сырое значение влажности почвы",
+          "service_uuid": "UUID BLE-сервиса",
+          "char_uuid": "UUID BLE-характеристики"
+        }
+      }
+    }
+  }
+}

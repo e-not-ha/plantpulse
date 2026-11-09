@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "devices": "Devices (one per line: MAC; Name)",
+          "scan_interval": "Polling interval (seconds)",
+          "max_retries": "Max retries",
+          "raw_soil_moisture": "Use raw soil moisture",
+          "service_uuid": "BLE service UUID",
+          "char_uuid": "BLE characteristic UUID"
+        }
+      }
+    },
+    "error": {
+      "invalid_mac": "Invalid MAC address",
+      "duplicate_mac": "Duplicate MAC address",
+      "no_devices": "At least one device is required"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "devices": "Devices (one per line: MAC; Name)",
+          "scan_interval": "Polling interval (seconds)",
+          "max_retries": "Max retries",
+          "raw_soil_moisture": "Use raw soil moisture",
+          "service_uuid": "BLE service UUID",
+          "char_uuid": "BLE characteristic UUID"
+        }
+      }
+    }
+  }
+}

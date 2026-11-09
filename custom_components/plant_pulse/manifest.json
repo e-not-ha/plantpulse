@@ -1,0 +1,13 @@
+{
+  "domain": "plant_pulse",
+  "name": "PlantPulse",
+  "codeowners": ["@your-github-username"],
+  "config_flow": true,
+  "dependencies": ["bluetooth"],
+  "documentation": "https://github.com/your-github-username/plantpulse",
+  "integration_type": "hub",
+  "iot_class": "assumed_state",
+  "issue_tracker": "https://github.com/your-github-username/plantpulse/issues",
+  "requirements": ["bleak-retry-connector>=3.2.0"],
+  "version": "1.0.0"
+}
