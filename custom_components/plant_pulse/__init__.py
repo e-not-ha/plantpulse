@@ -1,39 +1,51 @@
-"""PlantPulse integration for BLE plant sensors."""
-
+"""The PlantPulse integration."""
 from __future__ import annotations
 
 import logging
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.typing import ConfigType
+import voluptuous as vol
 
-from .const import (
-    CONF_CHAR_UUID,
-    CONF_DEVICES,
-    CONF_MAX_RETRIES,
-    CONF_RAW_SOIL,
-    CONF_SCAN_INTERVAL,
-    CONF_SERVICE_UUID,
-    DEFAULT_CHAR_UUID,
-    DEFAULT_MAX_RETRIES,
-    DEFAULT_RAW_SOIL,
-    DEFAULT_SCAN_INTERVAL,
-    DEFAULT_SERVICE_UUID,
-    DOMAIN,
-    PLATFORMS,
-    SERVICE_FORCE_UPDATE,
-)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, ServiceCall
+import homeassistant.helpers.config_validation as cv
+
+from .const import DOMAIN, SERVICE_FORCE_UPDATE
+from .coordinator import PlantPulseCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+PLATFORMS: list[Platform] = [Platform.SENSOR]
+
+SERVICE_FORCE_UPDATE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): cv.string,
+    }
+)
 
 
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up PlantPulse."""
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Register the force_update service once, at integration setup."""
     hass.data.setdefault(DOMAIN, {})
+
+    async def async_force_update(call: ServiceCall) -> None:
+        entry_id = call.data.get("entry_id")
+        if entry_id:
+            coordinator = hass.data[DOMAIN].get(entry_id)
+            if coordinator is None:
+                _LOGGER.warning("Entry %s not found for force_update", entry_id)
+                return
+            await coordinator.async_refresh()
+        else:
+            for coordinator in hass.data[DOMAIN].values():
+                await coordinator.async_refresh()
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_FORCE_UPDATE,
+        async_force_update,
+        schema=SERVICE_FORCE_UPDATE_SCHEMA,
+    )
     return True
 
 
@@ -45,20 +57,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
-
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    async def async_force_update(call):
-        await coordinator.async_refresh()
-
-    hass.services.async_register(
-        DOMAIN, SERVICE_FORCE_UPDATE, async_force_update
-    )
-
-    entry.async_on_unload(
-        entry.add_update_listener(async_reload_entry)
-    )
-
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
 
@@ -70,6 +71,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
-async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload config entry."""
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload integration when options change."""
     await hass.config_entries.async_reload(entry.entry_id)

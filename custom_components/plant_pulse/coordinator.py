@@ -1,5 +1,4 @@
-"""Data update coordinator for PlantPulse."""
-
+"""Data coordinator for PlantPulse."""
 from __future__ import annotations
 
 import asyncio
@@ -8,135 +7,120 @@ from datetime import timedelta
 from typing import Any
 
 from bleak import BleakClient
-from bleak_retry_connector import establish_connection
+from bleak.exc import BleakError
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
-from homeassistant.util import dt as dt_util
 
-from .const import (
-    ATTR_ERROR_COUNT,
-    ATTR_LAST_UPDATE,
-    CONF_CHAR_UUID,
-    CONF_DEVICES,
-    CONF_MAX_RETRIES,
-    CONF_RAW_SOIL,
-    CONF_SCAN_INTERVAL,
-    CONF_SERVICE_UUID,
-    DEFAULT_MAX_RETRIES,
-    DEFAULT_SCAN_INTERVAL,
-)
+from .const import CONF_DEVICES, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+UPDATE_INTERVAL = timedelta(minutes=5)
 
-def decode_payload(
-    data: bytes, raw_soil: bool = False
-) -> dict[str, float | int]:
-    """Decode raw BLE payload into sensor values.
+# UUID характеристики, из которой читается payload.
+# Уточните под ваш реальный MCLH-09.
+CHARACTERISTIC_UUID = "0000fff4-0000-1000-8000-00805f9b34fb"
 
-    Формат предполагается little-endian, 16-bit поля.
-    При необходимости скорректируй offsets/scale под реальный MCLH-09.
+# Если устройство падает N раз подряд — пропускаем его на время
+MAX_CONSECUTIVE_ERRORS = 5
+FAILURE_COOLDOWN_SEC = 300
+
+
+def decode_payload(payload: bytes) -> dict[str, float]:
+    """Decode raw BLE payload.
+
+    ВНИМАНИЕ: смещения и масштабы подобраны по аналогии с типичными
+    MCLH-09. Проверьте их на реальном устройстве.
     """
-    if len(data) < 10:
-        raise ValueError("Payload too short")
+    if len(payload) < 7:
+        raise ValueError(f"Payload too short: {len(payload)} bytes")
 
-    temperature = int.from_bytes(data[0:2], "little") / 10.0
-    humidity = int.from_bytes(data[2:4], "little") / 10.0
-    soil_raw = int.from_bytes(data[4:6], "little")
-    light = int.from_bytes(data[6:8], "little")
-    battery = int.from_bytes(data[8:10], "little")
-
-    soil = soil_raw if raw_soil else max(0.0, min(100.0, soil_raw / 10.0))
+    temperature = int.from_bytes(payload[0:2], "little", signed=True) / 10.0
+    humidity = int.from_bytes(payload[2:4], "little", signed=False) / 10.0
+    illuminance = int.from_bytes(payload[4:6], "little", signed=False)
+    battery = payload[6]
 
     return {
         "temperature": temperature,
         "humidity": humidity,
-        "soil_moisture": soil,
-        "light": light,
+        "illuminance": illuminance,
         "battery": battery,
     }
 
 
-class PlantPulseCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator that polls BLE plant sensors."""
+class PlantPulseCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
+    """Coordinator that polls all configured BLE devices in parallel."""
 
-    def __init__(self, hass: HomeAssistant, entry) -> None:
-        self._entry = entry
-        self._devices = entry.data.get(CONF_DEVICES, [])
-        self._scan_interval = timedelta(
-            seconds=entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-        )
-        self._max_retries = entry.data.get(CONF_MAX_RETRIES, DEFAULT_MAX_RETRIES)
-        self._raw_soil = entry.data.get(CONF_RAW_SOIL, False)
-        self._service_uuid = entry.data.get(CONF_SERVICE_UUID)
-        self._char_uuid = entry.data.get(CONF_CHAR_UUID)
-
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(
             hass,
             _LOGGER,
-            name=DOMAIN := "plant_pulse",
-            update_interval=self._scan_interval,
+            name="plant_pulse",
+            update_interval=UPDATE_INTERVAL,
         )
+        self._devices: list[dict[str, str]] = entry.data.get(CONF_DEVICES, [])
+        self._consecutive_errors: dict[str, int] = {d["mac"]: 0 for d in self._devices}
+        self._cooldown_until: dict[str, float] = {d["mac"]: 0.0 for d in self._devices}
 
-        self._error_counts: dict[str, int] = {}
-        self._last_update: dict[str, Any] = {}
+    async def _read_device(self, mac: str) -> dict[str, float]:
+        """Read one device and decode payload."""
+        async with BleakClient(mac, timeout=20.0) as client:
+            payload = await client.read_gatt_char(CHARACTERISTIC_UUID)
+            return decode_payload(bytes(payload))
 
-    async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from all devices."""
-        result: dict[str, Any] = {}
-        for device in self._devices:
+    def _should_skip(self, mac: str) -> bool:
+        loop_time = self.hass.loop.time()
+        return loop_time < self._cooldown_until.get(mac, 0.0)
+
+    def _mark_failure(self, mac: str) -> None:
+        self._consecutive_errors[mac] = self._consecutive_errors.get(mac, 0) + 1
+        if self._consecutive_errors[mac] >= MAX_CONSECUTIVE_ERRORS:
+            self._cooldown_until[mac] = self.hass.loop.time() + FAILURE_COOLDOWN_SEC
+            _LOGGER.warning(
+                "Device %s disabled for %s s after %s errors",
+                mac,
+                FAILURE_COOLDOWN_SEC,
+                self._consecutive_errors[mac],
+            )
+
+    def _mark_success(self, mac: str) -> None:
+        self._consecutive_errors[mac] = 0
+        self._cooldown_until[mac] = 0.0
+
+    async def _async_update_data(self) -> dict[str, dict[str, Any]]:
+        if not self._devices:
+            return {}
+
+        active = [d for d in self._devices if not self._should_skip(d["mac"])]
+        tasks = [self._read_device(d["mac"]) for d in active]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        data: dict[str, dict[str, Any]] = {}
+        errors: list[str] = []
+
+        # Сохраняем последние успешные значения для пропущенных устройств.
+        for d in self._devices:
+            mac = d["mac"]
+            if self._should_skip(mac) and self.data and mac in self.data:
+                data[mac] = self.data[mac]
+
+        for device, result in zip(active, results):
             mac = device["mac"]
-            try:
-                data = await self._read_device(mac)
-                values = decode_payload(data, self._raw_soil)
-                self._error_counts[mac] = 0
-                self._last_update[mac] = dt_util.utcnow()
-                result[mac] = {
-                    **values,
-                    ATTR_ERROR_COUNT: 0,
-                    ATTR_LAST_UPDATE: self._last_update[mac],
-                    "available": True,
-                }
-            except Exception as err:
-                count = self._error_counts.get(mac, 0) + 1
-                self._error_counts[mac] = count
-                _LOGGER.warning(
-                    "BLE read failed for %s (attempt %s/%s): %s",
-                    mac, count, self._max_retries, err
-                )
-                available = count < self._max_retries
-                result[mac] = {
-                    ATTR_ERROR_COUNT: count,
-                    ATTR_LAST_UPDATE: self._last_update.get(mac),
-                    "available": available,
-                }
-        return result
+            if isinstance(result, (Exception, BleakError)):
+                self._mark_failure(mac)
+                errors.append(f"{mac}: {result}")
+                if self.data and mac in self.data:
+                    data[mac] = self.data[mac]
+                continue
+            self._mark_success(mac)
+            data[mac] = result
 
-    async def _read_device(self, mac: str) -> bytes:
-        """Read characteristic with retry/backoff."""
-        delay = 1
-        last_err = None
-        for attempt in range(1, self._max_retries + 1):
-            try:
-                client = await establish_connection(
-                    BleakClient,
-                    self.hass.bluetooth,
-                    mac,
-                    used_discovery=None,
-                )
-                try:
-                    return await client.read_gatt_char(self._char_uuid)
-                finally:
-                    await client.disconnect()
-            except Exception as err:
-                last_err = err
-                _LOGGER.debug(
-                    "Attempt %s for %s failed: %s", attempt, mac, err
-                )
-                await asyncio.sleep(delay)
-                delay *= 2
-        raise last_err
+        if not data and errors:
+            raise UpdateFailed(f"All devices failed: {errors}")
+
+        return data

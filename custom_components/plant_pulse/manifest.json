@@ -1,13 +1,11 @@
 {
   "domain": "plant_pulse",
   "name": "PlantPulse",
-  "codeowners": ["@your-github-username"],
+  "codeowners": ["@e-not-ha"],
   "config_flow": true,
-  "dependencies": ["bluetooth"],
-  "documentation": "https://github.com/your-github-username/plantpulse",
-  "integration_type": "hub",
-  "iot_class": "assumed_state",
-  "issue_tracker": "https://github.com/your-github-username/plantpulse/issues",
-  "requirements": ["bleak-retry-connector>=3.2.0"],
-  "version": "1.0.0"
+  "documentation": "https://github.com/e-not-ha/plantpulse",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/e-not-ha/plantpulse/issues",
+  "requirements": ["bleak>=0.21.0"],
+  "version": "0.2.0"
 }
